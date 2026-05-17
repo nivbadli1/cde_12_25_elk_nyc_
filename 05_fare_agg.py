@@ -43,7 +43,7 @@ query_body = {
                         # The try/catch handles any values that can't be parsed (nulls, etc.)
                         "script": {
                             "source": """
-                                if (doc['fare_amount.keyword'].size() > 0 && !doc['fare_amount.keyword'].empty) {
+                                if (doc['fare_amount.keyword'].size() > 0) {
                                     try {
                                         return Double.parseDouble(doc['fare_amount.keyword'].value);
                                     } catch (Exception e) {
@@ -85,7 +85,7 @@ for bucket in response["aggregations"]["avg_fare_by_payment_type"]["buckets"]:
 #           "avg": {
 #             "script": {
 #               "source": """
-#                 if (doc['fare_amount.keyword'].size() > 0 && !doc['fare_amount.keyword'].empty) {
+#                 if (doc['fare_amount.keyword'].size() > 0) {
 #                   try { return Double.parseDouble(doc['fare_amount.keyword'].value); }
 #                   catch (Exception e) { return null; }
 #                 } else { return null; }

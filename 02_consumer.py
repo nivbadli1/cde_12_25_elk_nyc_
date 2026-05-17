@@ -1,6 +1,6 @@
 from kafka import KafkaConsumer
 from elasticsearch import Elasticsearch
-import json
+import json  # used inside the value_deserializer lambda below — do not remove
 
 # ============================================================
 # NYC Taxi Data Consumer
@@ -48,13 +48,19 @@ print(f"Indexing documents into Elasticsearch index: '{ES_INDEX}'\n")
 for message in consumer:
     document = message.value
 
-    # Index the document into Elasticsearch
-    # Note: the 'body' parameter is deprecated in ES client 8.x,
-    # but works correctly with elasticsearch==7.13.2 used in this course.
-    es.index(index=ES_INDEX, body=document)
+    try:
+        # Index the document into Elasticsearch.
+        # Note: the 'body' parameter is deprecated in ES client 8.x,
+        # but works correctly with elasticsearch==7.13.2 used in this course.
+        es.index(index=ES_INDEX, body=document)
 
-    print(f"  Indexed offset {message.offset}: {document.get('vendorid', '?')} | "
-          f"fare={document.get('fare_amount', '?')} | "
-          f"passengers={document.get('passenger_count', '?')}")
+        print(f"  Indexed offset {message.offset}: {document.get('vendorid', '?')} | "
+              f"fare={document.get('fare_amount', '?')} | "
+              f"passengers={document.get('passenger_count', '?')}")
+
+    except Exception as e:
+        # If Elasticsearch rejects the document (e.g. mapping conflict, ES not ready),
+        # log the error and continue to the next message instead of crashing.
+        print(f"  ERROR indexing offset {message.offset}: {e}")
 
 print("Consumer stopped.")
