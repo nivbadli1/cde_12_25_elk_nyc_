@@ -239,6 +239,219 @@ GET /nyctaxi/_search
 
 ---
 
+---
+
+## Part 5 — Building a Dashboard
+
+> We will build a dashboard with **4 visualizations** and assemble them into one screen.
+> Each visualization is created separately in **Visualize**, then added to a **Dashboard**.
+>
+> Make sure you already created the `nyctaxi` index pattern in Exercise 4.1.
+
+---
+
+### Visualization 1 — Pie chart: trips by payment type
+
+**Goal:** See the share of each payment method across all trips.
+
+**Steps:**
+1. Go to **Visualize → Create visualization → Pie**
+2. Select index: `nyctaxi`
+3. Under **Buckets** click **Add → Split slices**
+4. Aggregation: `Terms`
+5. Field: `payment_type.keyword`
+6. Size: `6` (to show all payment types)
+7. Click **Update ▶**
+8. Click **Save** → name it `Trips by Payment Type`
+
+<details>
+<summary>Expected result ✅</summary>
+
+You should see a pie divided into slices — typically 2 dominant slices:
+- **Type 1** (Credit card) — usually the largest slice (~60–70%)
+- **Type 2** (Cash) — second largest (~25–35%)
+- Types 3, 4, 5, 6 — small or absent depending on data volume
+
+The legend on the right maps each color to a payment type code.
+</details>
+
+---
+
+### Visualization 2 — Vertical bar chart: trips by vendor
+
+**Goal:** Compare how many trips each vendor has.
+
+**Steps:**
+1. Go to **Visualize → Create visualization → Vertical Bar**
+2. Select index: `nyctaxi`
+3. Y-axis is already set to `Count` — leave it as is
+4. Under **Buckets** click **Add → X-axis**
+5. Aggregation: `Terms`
+6. Field: `vendorid.keyword`
+7. Order by: `Metric: Count` → Descending
+8. Size: `5`
+9. Click **Update ▶**
+10. Click **Save** → name it `Trips by Vendor`
+
+<details>
+<summary>Expected result ✅</summary>
+
+Two bars on the X-axis — one for vendor `1` and one for vendor `2`.
+The height of each bar = number of trips for that vendor.
+Vendor `2` is usually higher in this dataset.
+
+If you see only one bar, it means all sampled trips belong to one vendor — normal with a small dataset.
+</details>
+
+---
+
+### Visualization 3 — Metric: total number of trips
+
+**Goal:** Show a single large number — total documents in the index.
+
+**Steps:**
+1. Go to **Visualize → Create visualization → Metric**
+2. Select index: `nyctaxi`
+3. The default metric is already `Count` — leave it as is
+4. Click **Update ▶**
+5. (Optional) Under **Options** set the font size to `60`
+6. Click **Save** → name it `Total Trips`
+
+<details>
+<summary>Expected result ✅</summary>
+
+A large number displayed in the center of the panel — total documents in `nyctaxi`.
+
+The number will grow over time as the producer keeps sending data.
+Refresh after a few minutes to see it increase.
+</details>
+
+---
+
+### Visualization 4 — Data table: trip count by payment type
+
+**Goal:** Show a table with each payment type and its trip count.
+
+**Steps:**
+1. Go to **Visualize → Create visualization → Data Table**
+2. Select index: `nyctaxi`
+3. Under **Buckets** click **Add → Split rows**
+4. Aggregation: `Terms`
+5. Field: `payment_type.keyword`
+6. Size: `6`
+7. Click **Update ▶**
+8. Click **Save** → name it `Payment Type Table`
+
+<details>
+<summary>Expected result ✅</summary>
+
+A table with two columns:
+
+| payment_type.keyword | Count |
+|---|---|
+| 1 | (number of credit card trips) |
+| 2 | (number of cash trips) |
+| 3 | (no charge trips) |
+
+**Teaching moment:** Notice we can't show average fare directly here — because
+`fare_amount` was auto-mapped as `keyword` (string), not `float`.
+This is a very common real-world mistake when ingesting data without a predefined mapping.
+
+The fix is to define the mapping **before** indexing any data:
+
+```
+PUT /nyctaxi
+{
+  "mappings": {
+    "properties": {
+      "fare_amount":     { "type": "float" },
+      "trip_distance":   { "type": "float" },
+      "passenger_count": { "type": "integer" }
+    }
+  }
+}
+```
+
+Once the mapping is explicit, the standard `avg` metric works without any Painless script.
+</details>
+
+---
+
+### Assemble the Dashboard
+
+**Goal:** Combine all 4 visualizations into one screen.
+
+**Steps:**
+1. Go to **Dashboard → Create new dashboard**
+2. Click **Add** (top right corner)
+3. Add all 4 saved visualizations:
+   - `Total Trips`
+   - `Trips by Payment Type`
+   - `Trips by Vendor`
+   - `Payment Type Table`
+4. Drag and resize the panels into this layout:
+
+```
+┌──────────────┬─────────────────────────┐
+│ Total Trips  │   Trips by Payment Type │
+│   (Metric)   │        (Pie chart)      │
+├──────────────┴─────────────────────────┤
+│  Trips by Vendor   │  Payment Type     │
+│   (Bar chart)      │  Table            │
+└────────────────────┴───────────────────┘
+```
+
+5. Set auto-refresh: top right → **Auto refresh → 10 seconds**
+6. Click **Save** → name it `NYC Taxi Overview`
+
+<details>
+<summary>Expected result ✅</summary>
+
+A live dashboard that updates every 10 seconds.
+You can watch the `Total Trips` metric increase in real time as the producer keeps sending messages through Kafka into Elasticsearch.
+
+This is the core of what Kibana is built for — turning a stream of raw events into a live operational view.
+</details>
+
+---
+
+### Dashboard — Discussion Questions
+
+After building the dashboard, discuss these with the class:
+
+**1. Why does the pie chart show codes (1, 2, 3) instead of names (Credit card, Cash)?**
+
+> Because Elasticsearch stores exactly what it received from the API — raw codes.
+> Translating codes to labels would happen in the application layer, or via a
+> Kibana **scripted field** (Stacks Management → Index Patterns → Scripted fields).
+
+**2. The Total Trips metric keeps growing after a restart — why?**
+
+> Because `auto_offset_reset='earliest'` in the consumer means every restart
+> re-reads all messages from offset 0, creating **duplicate documents** in Elasticsearch.
+> Elasticsearch auto-generates a new `_id` for each call to `es.index()`, so duplicates are not detected.
+>
+> Fix: pass a stable `id` to `es.index()` — for example the Kafka offset:
+> ```python
+> es.index(index=ES_INDEX, id=message.offset, body=document)
+> ```
+> Now re-indexing the same offset overwrites the same document instead of creating a duplicate.
+
+**3. What would you need to change to show Average Fare in the table?**
+
+> Define an explicit `float` mapping for `fare_amount` before indexing (see Visualization 4 answer).
+> Then delete the index, restart the consumer, and the standard `avg` metric will work
+> in Kibana without needing a Painless script.
+
+**4. What happens to the dashboard if the producer stops?**
+
+> The data already in Elasticsearch stays — the dashboard keeps showing the last state.
+> Nothing is lost. This is one of the key advantages of a Kafka buffer:
+> the producer and consumer are fully decoupled.
+
+---
+
+
 ## Payment Type Reference
 
 | Code | Meaning |
