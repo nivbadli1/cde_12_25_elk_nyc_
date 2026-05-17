@@ -19,6 +19,24 @@ GET /nyctaxi/_count
 
 **Question:** How many documents are currently in the index?
 
+<details>
+<summary>Expected answer ✅</summary>
+
+The response looks like this:
+
+```json
+{
+  "count": 1000,
+  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 }
+}
+```
+
+The exact number depends on how long the producer has been running.
+Each taxi trip from the API = one document. If the consumer was restarted,
+the count may be higher than expected because messages are re-read from offset 0
+and re-indexed with a new auto-generated `_id`.
+</details>
+
 ---
 
 ### Exercise 1.2 — Explore the field mapping
@@ -32,6 +50,37 @@ GET /nyctaxi/_mapping
 - What is the difference between a `text` field and a `keyword` field?
 - Why do we use `fare_amount.keyword` in our queries?
 
+<details>
+<summary>Expected answers ✅</summary>
+
+**What type is `fare_amount`?**
+
+```json
+"fare_amount": {
+  "type": "text",
+  "fields": {
+    "keyword": { "type": "keyword", "ignore_above": 256 }
+  }
+}
+```
+
+It is `text` — not `float` — because Elasticsearch used **dynamic mapping**.
+When no mapping is defined in advance, Elasticsearch guesses the type from the first
+document it sees. Since the NYC API sends all values as strings (e.g. `"8.5"`),
+Elasticsearch mapped `fare_amount` as text.
+
+**`text` vs `keyword`:**
+| | `text` | `keyword` |
+|---|---|---|
+| Analyzed? | Yes — tokenized, lowercased | No — stored exactly as-is |
+| Good for | Full-text search | Exact match, aggregations, sorting |
+| Example | Search for "taxi" inside a sentence | Filter where `vendorid = "1"` |
+
+**Why `.keyword` in queries?**
+The `text` field is tokenized and can't be used for exact matching or aggregations.
+The `.keyword` sub-field is the raw, unanalyzed version — required for `term` queries and `terms` aggregations.
+</details>
+
 ---
 
 ### Exercise 1.3 — Fetch a sample document
@@ -43,9 +92,41 @@ GET /nyctaxi/_search
 }
 ```
 
-Look at one document in the `_source` field.
-
 **Question:** What fields does a taxi trip have? Write down at least 5.
+
+<details>
+<summary>Expected answer ✅</summary>
+
+A typical document from the NYC Taxi dataset looks like this:
+
+```json
+{
+  "vendorid": "2",
+  "passenger_count": "1",
+  "trip_distance": "1.5",
+  "payment_type": "1",
+  "fare_amount": "8.0",
+  "tip_amount": "1.85",
+  "total_amount": "11.3",
+  "store_and_fwd_flag": "N",
+  "ratecodeid": "1",
+  "pulocationid": "162",
+  "dolocationid": "161"
+}
+```
+
+Key fields to know:
+| Field | Meaning |
+|---|---|
+| `vendorid` | Taxi company (1 = Creative Mobile, 2 = VeriFone) |
+| `passenger_count` | Number of passengers |
+| `trip_distance` | Distance in miles |
+| `payment_type` | How the trip was paid (see reference table at the bottom) |
+| `fare_amount` | Base fare in USD |
+| `tip_amount` | Tip in USD |
+| `total_amount` | Total charged |
+| `store_and_fwd_flag` | Was the trip stored locally before sending? (Y/N) |
+</details>
 
 ---
 
@@ -68,6 +149,25 @@ GET /nyctaxi/_search
 
 **Question:** How many hits did you get?
 
+<details>
+<summary>Expected answer ✅</summary>
+
+Look at `hits.total.value` in the response:
+
+```json
+{
+  "hits": {
+    "total": { "value": 432, "relation": "eq" },
+    ...
+  }
+}
+```
+
+The exact number depends on your data. Typically vendor `1` represents roughly
+30–45% of trips. If you got `0`, check that the consumer has indexed data and
+that you are using `.keyword` (not just `vendorid`).
+</details>
+
 ---
 
 ### Exercise 2.2 — Filter with two conditions (AND)
@@ -79,7 +179,7 @@ Find all trips where:
 > Hint: use a `bool` query with `must`
 
 <details>
-<summary>Show answer</summary>
+<summary>Show answer ✅</summary>
 
 ```
 GET /nyctaxi/_search
@@ -94,6 +194,10 @@ GET /nyctaxi/_search
   }
 }
 ```
+
+**Why `bool/must` and not two separate `term` queries?**
+A single `term` query can only filter on one field. `bool/must` combines multiple
+conditions — all of them must be true (equivalent to SQL `AND`).
 </details>
 
 ---
@@ -101,6 +205,25 @@ GET /nyctaxi/_search
 ### Exercise 2.3 — Your turn
 
 Write a query that returns trips where `store_and_fwd_flag` is `"N"`.
+
+<details>
+<summary>Show answer ✅</summary>
+
+```
+GET /nyctaxi/_search
+{
+  "query": {
+    "term": {
+      "store_and_fwd_flag.keyword": "N"
+    }
+  }
+}
+```
+
+`store_and_fwd_flag = "N"` means the trip record was sent directly to the server
+without being stored locally first. This is the case for the vast majority of trips.
+`"Y"` means the cab had no connection at the time and stored the record on board.
+</details>
 
 ---
 
@@ -126,6 +249,37 @@ GET /nyctaxi/_search
 - Which payment type has the most trips?
 - What does `"size": 0` do and why do we use it here?
 
+<details>
+<summary>Expected answers ✅</summary>
+
+**Which payment type has the most trips?**
+
+The response buckets look like this:
+
+```json
+"buckets": [
+  { "key": "1", "doc_count": 680 },
+  { "key": "2", "doc_count": 290 },
+  { "key": "3", "doc_count": 18 },
+  { "key": "4", "doc_count": 12 }
+]
+```
+
+**Payment type `1` (Credit card)** almost always has the most trips in this dataset.
+
+**What does `"size": 0` do?**
+
+It tells Elasticsearch: "Don't return any individual documents in `hits.hits` — only return the aggregation results."
+Without it, Elasticsearch would return 10 documents AND the aggregation, wasting bandwidth.
+Since we only care about the counts per bucket, `size: 0` makes the response smaller and faster.
+
+SQL equivalent:
+```sql
+-- size: 0 is like not doing SELECT * — we only want the GROUP BY result
+SELECT payment_type, COUNT(*) FROM nyctaxi GROUP BY payment_type
+```
+</details>
+
 ---
 
 ### Exercise 3.2 — Count trips per number of passengers
@@ -135,7 +289,7 @@ Write an aggregation that groups trips by `passenger_count`.
 > Hint: copy the query above and change the field name.
 
 <details>
-<summary>Show answer</summary>
+<summary>Show answer ✅</summary>
 
 ```
 GET /nyctaxi/_search
@@ -150,9 +304,21 @@ GET /nyctaxi/_search
   }
 }
 ```
-</details>
 
-**Question:** What is the most common number of passengers per trip?
+**Expected result:**
+
+| passenger_count | doc_count |
+|---|---|
+| 1 | (highest — single passengers dominate) |
+| 2 | (second) |
+| 5 | (third — group rides) |
+| 3 | ... |
+| 6 | ... |
+| 4 | (least common) |
+
+The most common number of passengers is **1** — solo riders account for the
+majority of NYC taxi trips.
+</details>
 
 ---
 
@@ -183,6 +349,44 @@ GET /nyctaxi/_search
 
 **Question:** For vendor `2`, which payment type is most common?
 
+<details>
+<summary>Expected answer ✅</summary>
+
+The response structure looks like this:
+
+```json
+"buckets": [
+  {
+    "key": "2",
+    "doc_count": 680,
+    "by_payment": {
+      "buckets": [
+        { "key": "1", "doc_count": 420 },
+        { "key": "2", "doc_count": 240 },
+        { "key": "3", "doc_count": 20 }
+      ]
+    }
+  },
+  {
+    "key": "1",
+    "doc_count": 320,
+    "by_payment": { ... }
+  }
+]
+```
+
+For vendor `2`, **payment type `1` (Credit card)** is the most common.
+This pattern holds for both vendors — credit card is dominant across the dataset.
+
+**SQL equivalent of this nested aggregation:**
+```sql
+SELECT vendorid, payment_type, COUNT(*)
+FROM nyctaxi
+GROUP BY vendorid, payment_type
+ORDER BY vendorid, COUNT(*) DESC
+```
+</details>
+
 ---
 
 ## Part 4 — Discover & Visualize (Kibana UI)
@@ -203,6 +407,21 @@ GET /nyctaxi/_search
 
 **Question:** Can you spot any trips with unusually high or low fares?
 
+<details>
+<summary>Expected answer ✅</summary>
+
+Click the `fare_amount` column header to sort. You may find:
+- Fares of `0.0` or even negative values — these are cancelled or disputed trips (payment types 3 and 4)
+- Very high fares (above `$50`) — typically long-distance trips or airport routes
+- The most common range is `$6–$15` for typical short city rides
+
+This is a good moment to discuss **data quality** — real-world streaming data
+often contains outliers, nulls, and unexpected values that need to be handled
+before analysis.
+</details>
+
+---
+
 ### Exercise 4.3 — Build a pie chart
 
 1. Go to **Visualize → Create visualization → Pie**
@@ -212,32 +431,17 @@ GET /nyctaxi/_search
 
 **Question:** What percentage of trips used payment type `1`?
 
----
-
-## Bonus Challenge
-
-Write a query that returns only trips where the `trip_distance` is greater than `5`.
-
-> Hint: `trip_distance` is stored as a keyword string, so you'll need a **script-based filter** or a **range query on the keyword** — or explore whether the field has a numeric mapping.
-
 <details>
-<summary>Show answer</summary>
+<summary>Expected answer ✅</summary>
 
-```
-GET /nyctaxi/_search
-{
-  "query": {
-    "script": {
-      "script": {
-        "source": "Double.parseDouble(doc['trip_distance.keyword'].value) > 5"
-      }
-    }
-  }
-}
-```
+Hover over the largest slice to see the exact percentage.
+In the NYC Taxi dataset, **payment type 1 (Credit card)** typically accounts
+for **60–70%** of all trips.
+
+If the slices are labeled with codes (1, 2, 3) instead of names — that is expected.
+Elasticsearch stores the raw values from the API. To show human-readable labels,
+you would need to add a scripted field or handle the mapping in the application layer.
 </details>
-
----
 
 ---
 
@@ -423,13 +627,13 @@ After building the dashboard, discuss these with the class:
 
 > Because Elasticsearch stores exactly what it received from the API — raw codes.
 > Translating codes to labels would happen in the application layer, or via a
-> Kibana **scripted field** (Stacks Management → Index Patterns → Scripted fields).
+> Kibana **scripted field** (Stack Management → Index Patterns → Scripted fields).
 
 **2. The Total Trips metric keeps growing after a restart — why?**
 
 > Because `auto_offset_reset='earliest'` in the consumer means every restart
 > re-reads all messages from offset 0, creating **duplicate documents** in Elasticsearch.
-> Elasticsearch auto-generates a new `_id` for each call to `es.index()`, so duplicates are not detected.
+> Elasticsearch auto-generates a new `_id` for each `es.index()` call, so duplicates are not detected.
 >
 > Fix: pass a stable `id` to `es.index()` — for example the Kafka offset:
 > ```python
@@ -451,6 +655,49 @@ After building the dashboard, discuss these with the class:
 
 ---
 
+## Bonus Challenge
+
+Write a query that returns only trips where the `trip_distance` is greater than `5`.
+
+> Hint: `trip_distance` is stored as a keyword string, so you'll need a script-based filter.
+
+<details>
+<summary>Show answer ✅</summary>
+
+```
+GET /nyctaxi/_search
+{
+  "query": {
+    "script": {
+      "script": {
+        "source": "Double.parseDouble(doc['trip_distance.keyword'].value) > 5"
+      }
+    }
+  }
+}
+```
+
+This uses a **Painless script** to cast the string value to a float at query time.
+It works, but it is slow — the script runs on every document in the index.
+
+The proper solution is to define `trip_distance` as `float` in the mapping upfront,
+and then use a standard `range` query:
+
+```
+GET /nyctaxi/_search
+{
+  "query": {
+    "range": {
+      "trip_distance": { "gt": 5 }
+    }
+  }
+}
+```
+
+`range` queries on numeric fields use the inverted index and are much faster than scripts.
+</details>
+
+---
 
 ## Payment Type Reference
 
